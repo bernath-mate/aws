@@ -36,7 +36,7 @@ try:
         stations = json.loads(body)
         print(f"loaded {len(stations)} stations")
         stations_batch_1 = stations[0:900]
-        print(f"batch 1: processing stations 0-899 ({len(stations_batch)} stations)")
+        print(f"batch 1: processing stations 0-899: ({len(stations_batch_1)} stations)")
     
     except Exception as e:
         print(f"error downloading station coordinates: {str(e)}")
