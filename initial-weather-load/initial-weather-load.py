@@ -63,7 +63,7 @@ try:
                 'timezone': 'auto'
             }
             
-            response = requests.get(API_BASE, params=params, timeout=120)
+            response = requests.get(API_BASE, params=params, timeout=240)
             response.raise_for_status()
             data = response.json()
             
