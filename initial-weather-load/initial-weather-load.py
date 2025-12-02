@@ -25,7 +25,7 @@ try:
     print("starting initial weather load")
     print(f"date range: {START_DATE} to {END_DATE}")
     
-    # STEP 1: Download and read station coordinates JSON from S3
+    # STEP 1: download and read station coordinates JSON from S3
     try:
         print("downloading station coordinates from s3")
         response = s3.get_object(
@@ -35,17 +35,19 @@ try:
         body = response['Body'].read().decode('utf-8')
         stations = json.loads(body)
         print(f"loaded {len(stations)} stations")
+        stations_batch_1 = stations[0:900]
+        print(f"batch 1: processing stations 0-899 ({len(stations_batch)} stations)")
     
     except Exception as e:
         print(f"error downloading station coordinates: {str(e)}")
         raise
     
-    # STEP 2: Fetch weather for each station
+    # STEP 2: fetch weather for each station
     all_weather = []
     success_count = 0
     error_count = 0
     
-    for idx, station in enumerate(stations):
+    for idx, station in enumerate(stations_batch_1):
         station_name = station['station_name']
         lat = station['lat']
         lon = station['lon']
@@ -63,7 +65,7 @@ try:
                 'timezone': 'auto'
             }
             
-            response = requests.get(API_BASE, params=params, timeout=240)
+            response = requests.get(API_BASE, params=params, timeout=420)
             response.raise_for_status()
             data = response.json()
             
@@ -112,7 +114,7 @@ try:
     if not all_weather:
         raise Exception("no weather data fetched, aborting")
     
-    # STEP 3: Define schema and create DataFrame with it
+    # STEP 3: define schema and create DataFrame with it
     try:
         print("defining schema and creating dataframe")
         schema = StructType([
@@ -135,7 +137,7 @@ try:
         print(f"error creating dataframe: {str(e)}")
         raise
     
-    # STEP 4: Write to S3 as CSV
+    # STEP 4: write to S3 as CSV
     try:
         output_path = "s3://mav-delays-weather-slucrx/raw-data/weather/initial-load/"
         print(f"writing csv to s3: {output_path}")
