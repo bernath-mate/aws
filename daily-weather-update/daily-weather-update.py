@@ -9,6 +9,7 @@ import urllib.parse
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
+import time
 
 args = {}
 glueContext = GlueContext(SparkContext.getOrCreate())
@@ -52,62 +53,71 @@ try:
         if (idx + 1) % 500 == 0:
             print(f"processing station {idx + 1}/{len(stations)}")
         
-        try:
-            # build url with urllib
-            params = {
-                'latitude': lat,
-                'longitude': lon,
-                'daily': 'wind_gusts_10m_max,precipitation_sum,temperature_2m_mean',
-                'forecast_days': 1,
-                'timezone': 'auto'
-            }
-            
-            query_string = urllib.parse.urlencode(params)
-            url = f'{API_BASE}?{query_string}'
-            
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'mav-weather-etl')
-            
-            with urllib.request.urlopen(req, timeout=120) as response:
-                data = json.loads(response.read().decode('utf-8'))
-            
-            # parse today's data
-            times = data['daily']['time']
-            temps = data['daily']['temperature_2m_mean']
-            winds = data['daily']['wind_gusts_10m_max']
-            precips = data['daily']['precipitation_sum']
-            
-            if times:
-                temp = temps[0]
-                wind = winds[0]
-                precip = precips[0]
-                
-                # thresholds
-                extreme_temperature = 1 if (temp < -15 or temp > 35) else 0
-                extreme_wind = 1 if wind > 60 else 0
-                extreme_precipitation = 1 if precip > 20 else 0
-                
-                record = {
-                    'date': today,
-                    'station_name': station_name,
-                    'latitude': float(lat),
-                    'longitude': float(lon),
-                    'temperature_mean_c': float(temp),
-                    'wind_gust_max_kmh': float(wind),
-                    'precipitation_sum_mm': float(precip),
-                    'extreme_temperature': extreme_temperature,
-                    'extreme_wind': extreme_wind,
-                    'extreme_precipitation': extreme_precipitation
+        # retry logic (3 attempts per station)
+        max_retries = 3
+        data = None
+        for attempt in range(max_retries):
+            try:
+                params = {
+                    'latitude': lat,
+                    'longitude': lon,
+                    'daily': 'wind_gusts_10m_max,precipitation_sum,temperature_2m_mean',
+                    'forecast_days': 1,
+                    'timezone': 'auto'
                 }
-                all_weather.append(record)
-                success_count += 1
+                
+                query_string = urllib.parse.urlencode(params)
+                url = f'{API_BASE}?{query_string}'
+                
+                req = urllib.request.Request(url)
+                req.add_header('User-Agent', 'mav-weather-etl')
+                
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                break  # success, exit retry loop
+            
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"retry {attempt+1}/3 for {station_name}")
+                    time.sleep(5)
+                else:
+                    print(f"failed after 3 retries for {station_name}: {str(e)}")
+                    error_count += 1
         
-        except urllib.error.URLError as e:
-            print(f"api error for {station_name}: {str(e)}")
-            error_count += 1
-        except Exception as e:
-            print(f"error processing {station_name}: {str(e)}")
-            error_count += 1
+        if data is None:
+            # skip this station's parsing, as fetching data was unsuccessful
+            continue
+        
+        # parse today's data
+        times = data['daily']['time']
+        temps = data['daily']['temperature_2m_mean']
+        winds = data['daily']['wind_gusts_10m_max']
+        precips = data['daily']['precipitation_sum']
+        
+        if times:
+            temp = temps[0]
+            wind = winds[0]
+            precip = precips[0]
+            
+            # thresholds
+            extreme_temperature = 1 if (temp < -15 or temp > 35) else 0
+            extreme_wind = 1 if wind > 60 else 0
+            extreme_precipitation = 1 if precip > 20 else 0
+            
+            record = {
+                'date': today,
+                'station_name': station_name,
+                'latitude': float(lat),
+                'longitude': float(lon),
+                'temperature_mean_c': float(temp),
+                'wind_gust_max_kmh': float(wind),
+                'precipitation_sum_mm': float(precip),
+                'extreme_temperature': extreme_temperature,
+                'extreme_wind': extreme_wind,
+                'extreme_precipitation': extreme_precipitation
+            }
+            all_weather.append(record)
+            success_count += 1
     
     print(f"fetch complete: {success_count} success, {error_count} errors")
     
