@@ -53,7 +53,7 @@ try:
         lon = station['lon']
         
         if (idx + 1) % 100 == 0:
-            print(f"processing station {idx + 1}/{len(stations)}")
+            print(f"processing station {idx + 1}/{len(stations_batch_1)}")
         
         try:
             params = {
