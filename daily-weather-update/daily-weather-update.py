@@ -181,3 +181,18 @@ except Exception as e:
 
 finally:
     job.commit()
+    
+# after all weather data uploaded successfully:
+import boto3
+
+lambda_client = boto3.client('lambda', region_name='us-east-1')
+
+print("triggering athena query refresh")
+try:
+    lambda_client.invoke(
+        FunctionName='mav-athena-query-runner',
+        InvocationType='RequestResponse'
+    )
+    print("athena query refresh triggered")
+except Exception as e:
+    print(f"error triggering lambda: {str(e)}")
