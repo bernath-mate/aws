@@ -139,7 +139,7 @@ try:
     
     # STEP 4: write to S3 as CSV
     try:
-        output_path = "s3://mav-delays-weather-slucrx/raw-data/weather/initial-load/"
+        output_path = "s3://mav-delays-weather-slucrx/raw-data/weather/initial-load//batch-2"
         print(f"writing csv to s3: {output_path}")
         
         df_weather.coalesce(1).write \
