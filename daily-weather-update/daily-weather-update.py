@@ -1,31 +1,65 @@
 import sys
 import boto3
 import json
-from datetime import datetime
-import csv
-import io
-import urllib.request
-import urllib.parse
+import requests
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
-import time
+from pyspark.sql.functions import *
+from pyspark.sql.types import StructType, StructField, StringType, FloatType, IntegerType
+from datetime import datetime
 
 args = {}
 glueContext = GlueContext(SparkContext.getOrCreate())
 spark = glueContext.spark_session
 job = Job(glueContext)
-job.init("daily-weather-update", {})
+job.init("initial-weather-load", {})
+
+BUCKET = 'mav-delays-weather-slucrx'
+API_BASE = 'https://archive-api.open-meteo.com/v1/archive'
 
 s3 = boto3.client('s3')
-BUCKET = 'mav-delays-weather-slucrx'
-API_BASE = 'https://api.open-meteo.com/v1/forecast'
 
 try:
-    today = datetime.now().strftime('%Y-%m-%d')
-    print(f"starting daily weather fetch for {today}")
+    print("starting weather load with date range from delays file")
     
-    # step 1: download station coordinates
+    # STEP 0: extract date range from delays CSV filename
+    try:
+        print("scanning for latest delays csv file")
+        response = s3.list_objects_v2(
+            Bucket=BUCKET,
+            Prefix='raw-data/delays/weekly-updates/',
+            Delimiter='/'
+        )
+        
+        if 'Contents' not in response or len(response['Contents']) == 0:
+            raise Exception("no delays csv files found in weekly-updates folder")
+        
+        # get latest file (most recent by LastModified)
+        latest_file = max(response['Contents'], key=lambda x: x['LastModified'])
+        filename = latest_file['Key'].split('/')[-1]
+        print(f"found latest delays file: {filename}")
+        
+        # parse filename: format is YYYY-MM-DD_YYYY-MM-DD_delays.csv
+        # example: 2025-11-24_2025-11-30_delays.csv
+        parts = filename.replace('_delays.csv', '').split('_')
+        if len(parts) < 2:
+            raise Exception(f"invalid filename format: {filename}")
+        
+        START_DATE = parts[0]  # 2025-11-24
+        END_DATE = parts[1]    # 2025-11-30
+        
+        # validate date format
+        datetime.strptime(START_DATE, '%Y-%m-%d')
+        datetime.strptime(END_DATE, '%Y-%m-%d')
+        
+        print(f"extracted date range: {START_DATE} to {END_DATE}")
+    
+    except Exception as e:
+        print(f"error extracting date range from filename: {str(e)}")
+        raise
+    
+    # STEP 1: download and read station coordinates JSON from S3
     try:
         print("downloading station coordinates from s3")
         response = s3.get_object(
@@ -35,143 +69,141 @@ try:
         body = response['Body'].read().decode('utf-8')
         stations = json.loads(body)
         print(f"loaded {len(stations)} stations")
+        stations_batch_1 = stations[0:900]
+        print(f"batch 1: processing stations 0-899: ({len(stations_batch_1)} stations)")
     
     except Exception as e:
         print(f"error downloading station coordinates: {str(e)}")
         raise
     
-    # step 2: fetch weather for today
+    # STEP 2: fetch weather for each station
     all_weather = []
     success_count = 0
     error_count = 0
     
-    for idx, station in enumerate(stations):
+    for idx, station in enumerate(stations_batch_1):
         station_name = station['station_name']
         lat = station['lat']
         lon = station['lon']
         
-        if (idx + 1) % 500 == 0:
-            print(f"processing station {idx + 1}/{len(stations)}")
+        if (idx + 1) % 100 == 0:
+            print(f"processing station {idx + 1}/{len(stations_batch_1)}")
         
-        # retry logic (3 attempts per station)
-        max_retries = 3
-        data = None
-        for attempt in range(max_retries):
-            try:
-                params = {
-                    'latitude': lat,
-                    'longitude': lon,
-                    'daily': 'wind_gusts_10m_max,precipitation_sum,temperature_2m_mean',
-                    'forecast_days': 1,
-                    'timezone': 'auto'
-                }
-                
-                query_string = urllib.parse.urlencode(params)
-                url = f'{API_BASE}?{query_string}'
-                
-                req = urllib.request.Request(url)
-                req.add_header('User-Agent', 'mav-weather-etl')
-                
-                with urllib.request.urlopen(req, timeout=180) as resp:
-                    data = json.loads(resp.read().decode('utf-8'))
-                break  # success, exit retry loop
-            
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"retry {attempt+1}/3 for {station_name}")
-                    time.sleep(5)
-                else:
-                    print(f"failed after 3 retries for {station_name}: {str(e)}")
-                    error_count += 1
-        
-        if data is None:
-            # skip this station's parsing, as fetching data was unsuccessful
-            continue
-        
-        # parse today's data
-        times = data['daily']['time']
-        temps = data['daily']['temperature_2m_mean']
-        winds = data['daily']['wind_gusts_10m_max']
-        precips = data['daily']['precipitation_sum']
-        
-        if times:
-            temp = temps[0]
-            wind = winds[0]
-            precip = precips[0]
-            
-            # thresholds
-            extreme_temperature = 1 if (temp < -15 or temp > 35) else 0
-            extreme_wind = 1 if wind > 60 else 0
-            extreme_precipitation = 1 if precip > 20 else 0
-            
-            record = {
-                'date': today,
-                'station_name': station_name,
-                'latitude': float(lat),
-                'longitude': float(lon),
-                'temperature_mean_c': float(temp),
-                'wind_gust_max_kmh': float(wind),
-                'precipitation_sum_mm': float(precip),
-                'extreme_temperature': extreme_temperature,
-                'extreme_wind': extreme_wind,
-                'extreme_precipitation': extreme_precipitation
+        try:
+            params = {
+                'latitude': lat,
+                'longitude': lon,
+                'start_date': START_DATE,
+                'end_date': END_DATE,
+                'daily': 'wind_gusts_10m_max,temperature_2m_mean,precipitation_sum',
+                'timezone': 'auto'
             }
-            all_weather.append(record)
+            
+            response = requests.get(API_BASE, params=params, timeout=420)
+            response.raise_for_status()
+            data = response.json()
+            
+            # parse all days in response
+            times = data['daily']['time']
+            temps = data['daily']['temperature_2m_mean']
+            winds = data['daily']['wind_gusts_10m_max']
+            precips = data['daily']['precipitation_sum']
+            
+            for i, date_str in enumerate(times):
+                temp = temps[i]
+                wind = winds[i]
+                precip = precips[i]
+                
+                # hungarian thresholds
+                extreme_temperature = 1 if (temp < -15 or temp > 35) else 0
+                extreme_wind = 1 if wind > 60 else 0
+                extreme_precipitation = 1 if precip > 20 else 0
+                
+                record = {
+                    'date': date_str,
+                    'station_name': station_name,
+                    'latitude': float(lat),
+                    'longitude': float(lon),
+                    'temperature_mean_c': float(temp),
+                    'wind_gust_max_kmh': float(wind),
+                    'precipitation_sum_mm': float(precip),
+                    'extreme_temperature': int(extreme_temperature),
+                    'extreme_wind': int(extreme_wind),
+                    'extreme_precipitation': int(extreme_precipitation)
+                }
+                all_weather.append(record)
+            
             success_count += 1
+        
+        except requests.exceptions.RequestException as e:
+            print(f"api request failed for {station_name}: {str(e)}")
+            error_count += 1
+        except Exception as e:
+            print(f"error processing station {station_name}: {str(e)}")
+            error_count += 1
     
-    print(f"fetch complete: {success_count} success, {error_count} errors")
+    print(f"api fetch complete: {success_count} successful, {error_count} failed")
+    print(f"total records collected: {len(all_weather)}")
     
     if not all_weather:
-        print("no weather data fetched, aborting")
-        raise Exception("no data")
+        raise Exception("no weather data fetched, aborting")
     
-    # step 3: convert to csv
-    print(f"converting {len(all_weather)} records to csv")
-    
+    # STEP 3: define schema and create DataFrame with it
     try:
-        csv_buffer = io.StringIO()
-        fieldnames = [
-            'date', 'station_name', 'latitude', 'longitude',
-            'temperature_mean_c', 'wind_gust_max_kmh', 'precipitation_sum_mm',
-            'extreme_temperature', 'extreme_wind', 'extreme_precipitation'
-        ]
-        writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_weather)
+        print("defining schema and creating dataframe")
+        schema = StructType([
+            StructField("date", StringType(), True),
+            StructField("station_name", StringType(), True),
+            StructField("latitude", FloatType(), True),
+            StructField("longitude", FloatType(), True),
+            StructField("temperature_mean_c", FloatType(), True),
+            StructField("wind_gust_max_kmh", FloatType(), True),
+            StructField("precipitation_sum_mm", FloatType(), True),
+            StructField("extreme_temperature", IntegerType(), True),
+            StructField("extreme_wind", IntegerType(), True),
+            StructField("extreme_precipitation", IntegerType(), True)
+        ])
         
-        csv_content = csv_buffer.getvalue()
-        print(f"csv buffer size: {len(csv_content)} bytes")
-        
-        # step 4: upload to s3
-        s3_key = f'raw-data/weather/daily-updates/{today}/weather_{today}.csv'
-        print(f"uploading to s3: {s3_key}")
-        
-        s3.put_object(
-            Bucket=BUCKET,
-            Key=s3_key,
-            Body=csv_content
-        )
-        
-        print(f"upload successful: {s3_key}")
-        
-        # summary
-        extreme_temps = sum(1 for r in all_weather if r['extreme_temperature'] == 1)
-        extreme_winds = sum(1 for r in all_weather if r['extreme_wind'] == 1)
-        extreme_precips = sum(1 for r in all_weather if r['extreme_precipitation'] == 1)
-        
-        summary = {
-            'date': today,
-            'records_fetched': len(all_weather),
-            'extreme_temperature_count': extreme_temps,
-            'extreme_wind_count': extreme_winds,
-            'extreme_precipitation_count': extreme_precips
-        }
-        
-        print(f"summary: {json.dumps(summary)}")
-        
+        df_weather = spark.createDataFrame(all_weather, schema=schema)
+        print(f"dataframe created with {df_weather.count()} records")
+    
     except Exception as e:
-        print(f"csv conversion error: {str(e)}")
+        print(f"error creating dataframe: {str(e)}")
         raise
+    
+    # STEP 4: write to S3 as CSV
+    try:
+        output_path = "s3://mav-delays-weather-slucrx/raw-data/weather/weekly-updates"
+        print(f"writing csv to s3: {output_path}")
+        
+        df_weather.coalesce(1).write \
+            .mode("overwrite") \
+            .option("header", "true") \
+            .csv(output_path)
+        
+        print(f"csv write successful: {output_path}")
+    
+    except Exception as e:
+        print(f"error writing csv to s3: {str(e)}")
+        raise
+    
+    # summary statistics
+    try:
+        print("calculating summary statistics")
+        stats = df_weather.groupBy().agg(
+            countDistinct("date").alias("unique_dates"),
+            countDistinct("station_name").alias("unique_stations"),
+            sum("extreme_temperature").alias("extreme_temp_count"),
+            sum("extreme_wind").alias("extreme_wind_count"),
+            sum("extreme_precipitation").alias("extreme_precip_count")
+        ).collect()[0]
+        
+        print(f"summary: total_records={len(all_weather)}, unique_dates={stats[0]}, unique_stations={stats[1]}, extreme_temps={stats[2]}, extreme_winds={stats[3]}, extreme_precips={stats[4]}")
+    
+    except Exception as e:
+        print(f"error calculating statistics: {str(e)}")
+    
+    print("weather load completed successfully")
 
 except Exception as e:
     print(f"fatal error: {str(e)}")
@@ -181,18 +213,3 @@ except Exception as e:
 
 finally:
     job.commit()
-    
-# after all weather data uploaded successfully:
-import boto3
-
-lambda_client = boto3.client('lambda', region_name='us-east-1')
-
-print("triggering athena query refresh")
-try:
-    lambda_client.invoke(
-        FunctionName='daily-weather-update-query-runner',
-        InvocationType='RequestResponse'
-    )
-    print("athena query refresh triggered")
-except Exception as e:
-    print(f"error triggering lambda: {str(e)}")
