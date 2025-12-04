@@ -68,14 +68,14 @@ try:
     
     # Write to S3
     try:
-        print("writing parquet data to s3://mav-delays-weather-slucrx/processed-data/delays_all/")
-        df_final.write \
+        print("writing csv data to s3://mav-delays-weather-slucrx/processed-data/delays_all/")
+        df_final.coalesce(1).write \
             .mode("overwrite") \
-            .option("compression", "snappy") \
-            .parquet("s3://mav-delays-weather-slucrx/processed-data/delays_all/")
-        print("successfully wrote parquet files to s3")
+            .option("header", "true") \
+            .csv("s3://mav-delays-weather-slucrx/processed-data/delays_all/")
+        print("successfully wrote csv files to s3")
     except Exception as e:
-        print(f"failed to write parquet data to s3: {str(e)}")
+        print(f"failed to write csv data to s3: {str(e)}")
         raise
     
     try:
@@ -95,7 +95,7 @@ try:
     try:
         print("committing glue job")
         job.commit()
-        print("etl job completed successfully - run 'msck repair table delays_all' in athena to refresh metadata")
+        print("etl job completed successfully")
     except Exception as e:
         print(f"failed to commit job: {str(e)}")
         raise
