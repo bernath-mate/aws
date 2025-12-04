@@ -32,22 +32,22 @@ try:
         print(f"failed to read weather_initial table: {str(e)}")
         raise
     
-    # Read weather_yesterday table
+    # Read weather_last_week table
     try:
-        print("reading weather_yesterday table from glue catalog")
-        df_yesterday = glueContext.create_dynamic_frame.from_catalog(
+        print("reading weather_last_week table from glue catalog")
+        df_last_week = glueContext.create_dynamic_frame.from_catalog(
             database="mav_delays_weather", 
-            table_name="weather_yesterday"
+            table_name="weather_last_week"
         ).toDF()
-        print(f"successfully loaded weather_yesterday: {df_yesterday.count()} rows")
+        print(f"successfully loaded weather_last_week: {df_last_week.count()} rows")
     except Exception as e:
-        print(f"failed to read weather_yesterday table: {str(e)}")
+        print(f"failed to read weather_last_week table: {str(e)}")
         raise
     
     # Union tables
     try:
-        print("unioning weather_initial and weather_yesterday tables")
-        df_all = df_initial.union(df_yesterday)
+        print("unioning weather_initial and weather_last_week tables")
+        df_all = df_initial.union(df_last_week)
         print(f"successfully created union: {df_all.count()} total rows")
     except Exception as e:
         print(f"failed to union tables: {str(e)}")
@@ -98,6 +98,48 @@ try:
         print(f"msck repair query started: {response['QueryExecutionId']}")
     except Exception as e:
         print(f"failed to run msck repair: {str(e)}")
+    
+    # ===== NEW SECTION: CREATE/REPLACE UNIFIED_ALL VIEW =====
+    
+    print("\n=== starting unified_all view refresh ===")
+    
+    try:
+        print("creating or replacing unified_all view")
+        unified_view_query = """
+        CREATE OR REPLACE VIEW unified_all AS
+        SELECT 
+            'delay' as data_type,
+            date,
+            station_name,
+            NULL as extreme_temperature,
+            NULL as extreme_wind,
+            NULL as extreme_precipitation,
+            total_delay_minutes,
+            train_count,
+            avg_delay_minutes
+        FROM delays_all
+        UNION ALL
+        SELECT 
+            'weather' as data_type,
+            date,
+            station_name,
+            extreme_temperature,
+            extreme_wind,
+            extreme_precipitation,
+            NULL as total_delay_minutes,
+            NULL as train_count,
+            NULL as avg_delay_minutes
+        FROM weather_all
+        """
+        
+        response = athena_client.start_query_execution(
+            QueryString=unified_view_query,
+            QueryExecutionContext={'Database': 'mav_delays_weather'},
+            ResultConfiguration={'OutputLocation': 's3://mav-delays-weather-slucrx/query-results/'}
+        )
+        print(f"unified_all view creation query started: {response['QueryExecutionId']}")
+    except Exception as e:
+        print(f"failed to create unified_all view: {str(e)}")
     
     # Commit job
     try:
