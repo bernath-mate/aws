@@ -1,7 +1,7 @@
 {
   "name" : "initial-weather-load-2",
   "jobMode" : "SCRIPT",
-  "description" : "batch 1",
+  "description" : "batch 2",
   "role" : "arn:aws:iam::381492109140:role/LabRole",
   "executionProperty" : {
     "maxConcurrentRuns" : 1
@@ -19,7 +19,8 @@
     "--enable-glue-datacatalog" : "true",
     "--job-bookmark-option" : "job-bookmark-disable",
     "--job-language" : "python",
-    "--TempDir" : "s3://aws-glue-assets-381492109140-us-east-1/temporary/"
+    "--TempDir" : "s3://aws-glue-assets-381492109140-us-east-1/temporary/",
+    "--enable-auto-scaling" : "true"
   },
   "maxRetries" : 0,
   "allocatedCapacity" : 10,
