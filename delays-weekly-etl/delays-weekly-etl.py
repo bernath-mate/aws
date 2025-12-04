@@ -5,6 +5,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql.functions import *
+import boto3
 
 args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 
@@ -77,7 +78,20 @@ try:
         print(f"failed to write parquet data to s3: {str(e)}")
         raise
     
-    # Commit job
+    try:
+        print("running msck repair table to refresh athena metadata")
+        athena_client = boto3.client('athena', region_name='us-east-1')
+        
+        repair_query = "MSCK REPAIR TABLE delays_all"
+        response = athena_client.start_query_execution(
+            QueryString=repair_query,
+            QueryExecutionContext={'Database': 'mav_delays_weather'},
+            ResultConfiguration={'OutputLocation': 's3://mav-delays-weather-slucrx/query-results/'}
+        )
+        print(f"msck repair query started: {response['QueryExecutionId']}")
+    except Exception as e:
+        print(f"failed to run msck repair: {str(e)}")
+    
     try:
         print("committing glue job")
         job.commit()
