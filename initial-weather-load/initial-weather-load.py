@@ -17,7 +17,7 @@ job.init("initial-weather-load", {})
 BUCKET = 'mav-delays-weather-slucrx'
 API_BASE = 'https://archive-api.open-meteo.com/v1/archive'
 START_DATE = '2025-06-01'
-END_DATE = '2025-11-30'
+END_DATE = '2025-11-23'
 
 s3 = boto3.client('s3')
 
